@@ -13,7 +13,7 @@ library(e1071)
 small <- 1e-6  # ゼロ分散対策用
 
 # --- データ読み込み＋ラベル付与 ---
-NB_bleeding <- read.csv("NB_bleeding.csv", header = TRUE, sep = ",") %>%
+NB_bleeding <- read.csv("NB_bleeding_demo.csv", header = TRUE, sep = ",") %>%
   arrange(id, day) %>%
   group_by(id) %>%
   # 次の time の status をそのまま status_next として持ってくる
