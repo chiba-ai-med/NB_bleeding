@@ -34,7 +34,7 @@ get_conditional_stats <- function(df, vars) {
   stats <- list()
   for (v in vars) {
     grp <- df %>%
-      filter(!is.na(.data[[v]])) %>%
+      filter(!is.na(.data[[v]]), !is.na(status_next)) %>% #修正しました
       group_by(status_next) %>%
       summarise(
         mean = mean(.data[[v]], na.rm = TRUE),
@@ -81,26 +81,30 @@ compute_log_likelihood_ratio <- function(row, cond_stats) {
 # =============================================================================
 # ログオッズを累積更新するフィルター(参考、これは使わない)
 # =============================================================================
-apply_log_bayes_filter <- function(data, cond_stats, prior_init = 0.5) {
+apply_log_bayes_filter_weighted <- function(data, cond_stats, prior_init = 0.5, alpha = 0.5) {
   data <- data %>% arrange(id, day)
   data <- data %>% group_by(id) %>% mutate(
-    score_dyn = {
+    score_logadd = {
       logit_prev <- log(prior_init / (1 - prior_init))
       n_pts <- n()
       scores <- numeric(n_pts)
       for (i in seq_len(n_pts)) {
         row_i <- cur_data()[i, ]
         delta  <- compute_log_likelihood_ratio(row_i, cond_stats)
-        logit_now <- logit_prev + delta
+        # 重み付き更新（過去と現在を alpha : 1-alpha で混合）
+        # 原案はalphaなしのlogit_now <- logit_prev + delta
+        logit_now <- alpha * logit_prev + (1 - alpha) * delta
         scores[i]  <- logit_now
         logit_prev <- logit_now
       }
       scores
     },
-    prob_dyn = 1 / (1 + exp(-score_dyn))
+    prob_logadd = 1 / (1 + exp(-score_logadd))
   ) %>% ungroup()
   return(data)
 }
+#_dynをlogaddに修正
+#alphaを加えた。alpha = 1だと前回分、alpha = 0だと今回分のみの観測尤度
 
 # =============================================================================
 # Dynamic Naïve Bayes Filter
@@ -125,6 +129,54 @@ apply_bayes_filter_with_transition <- function(data, cond_stats,
         delta  <- compute_log_likelihood_ratio(row_i, cond_stats)
         # 4) 遷移後の logit に尤度差を足して更新
         logit_now <- logit_trans + delta
+        scores[i] <- logit_now
+        logit_prev <- logit_now
+      }
+      scores
+    },
+    prob_dyn = 1 / (1 + exp(-score_dyn))
+  ) %>% ungroup()
+}
+
+# =============================================================================
+#' Dynamic Naive Bayes Filter with personalized transition probabilities
+#' (P11 and P01 computed from static features at each time point)
+# =============================================================================
+
+apply_bayes_filter_with_transition_custom <- function(data, cond_stats,
+                                                      beta = c(-2, 3, 0.05),
+                                                      prior_init = 0.5) {
+  # beta: coefficients for logistic model to compute P(Y_t = 1 | Y_{t-1}, static_vars)
+  # beta[1] = intercept, beta[2] = coefficient for Y_{t-1}, beta[3:] = static feature coeffs
+  
+  data <- data %>% arrange(id, day)
+  
+  # 必要な静的変数の列を抽出（ここでは age だけを例示）
+  static_vars <- c("age")  # 必要に応じて拡張
+  
+  data %>% group_by(id) %>% mutate(
+    score_dyn = {
+      logit_prev <- log(prior_init / (1 - prior_init))
+      scores <- numeric(n())
+      
+      # static変数を1人ぶんだけ取り出す（id単位）
+      static_vals <- cur_data()[1, static_vars, drop = TRUE] %>% as.numeric()
+      
+      for (i in seq_len(n())) {
+        # 1) 前回の事後を確率に戻す
+        p_prev <- 1 / (1 + exp(-logit_prev))
+        
+        # 2) 状態遷移確率をロジスティックで計算（個別化）
+        y_prev <- round(p_prev)  # 簡易的に 0/1 として扱う
+        z <- beta[1] + beta[2] * y_prev + sum(beta[3:length(beta)] * static_vals)
+        prior_t <- 1 / (1 + exp(-z))
+        
+        # 3) 観測尤度差を計算
+        row_i <- cur_data()[i, ]
+        delta <- compute_log_likelihood_ratio(row_i, cond_stats)
+        
+        # 4) ロジット更新
+        logit_now <- log(prior_t / (1 - prior_t)) + delta
         scores[i] <- logit_now
         logit_prev <- logit_now
       }
