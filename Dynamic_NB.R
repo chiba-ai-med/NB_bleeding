@@ -12,13 +12,26 @@ library(e1071)
 # --- パラメータ ---
 small <- 1e-6  # ゼロ分散対策用
 
-# --- データ読み込み＋ラベル付与 ---
+# --- データ読み込み＋ラベル付与 ---　#ここに修正を加えた
 NB_bleeding <- read.csv("NB_bleeding_demo.csv", header = TRUE, sep = ",") %>%
   arrange(id, day) %>%
   group_by(id) %>%
   # 次の time の status をそのまま status_next として持ってくる
   mutate(status_next = lead(status)) %>%
   ungroup()
+
+NB_bleeding <- NB_bleeding %>%
+  select(status_next, everything())
+
+NB_bleeding$status_next[!is.na(NB_bleeding$status_next)] <- 0
+NB_bleeding$status[!is.na(NB_bleeding$status_next)] <- NB_bleeding$status_next[!is.na(NB_bleeding$status_next)]
+
+NB_bleeding <- NB_bleeding %>%
+  group_by(id) %>% mutate(status_next = lead(status)) %>%
+  ungroup()
+
+NB_bleeding <- NB_bleeding %>%
+  filter(!is.na(status_next))
 
 # --- 変数指定（静的・動的） ---
 static_vars  <- names(NB_bleeding)[which(names(NB_bleeding) == "age"):
@@ -200,7 +213,7 @@ test_data  <- NB_bleeding %>% filter(id %in% test_ids,  day %in% 0:5)
 # モデル学習と予測
 # =============================================================================
 cond_stats <- get_conditional_stats(train_data, all_vars)
-test_results <- apply_bayes_filter_with_transition(test_data, cond_stats)
+test_results <- apply_bayes_filter_with_transition_custom(test_data, cond_stats)
 
 # =============================================================================
 # リスク推移の可視化（ランダムに10 ID を抽出）
@@ -323,12 +336,12 @@ for (t in 0:5) {
 nb_auc_test$model <- "Normal NB (test)"
 
 # --- 3) プロット比較 ---
-auc_compare <- bind_rows(nb_auc_test, filter_auc)
+auc_compare <- bind_rows(nb_auc_test, auc_by_day) #auc_by_dayに修正
 
 ggplot(auc_compare, aes(x = day, y = AUROC, color = model)) +
   geom_line() +
   geom_point() +
-  labs(title = "AUROC Over Time: Normal NB vs Bayes Filter NB",
+  labs(title = "AUROC Over Time: Normal NB vs Bayes Filter NB Custom",
        x = "Day", y = "AUROC",
        color = "Model") +
   theme_minimal()
